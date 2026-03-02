@@ -52,7 +52,7 @@ dp = Dispatcher()
 # 🚀 ADVANCED CONCURRENCY & LOCK SYSTEM
 # ==========================================
 user_locks = defaultdict(asyncio.Lock)
-api_semaphore = asyncio.Semaphore(20) 
+api_semaphore = asyncio.Semaphore(3) 
 auth_lock = asyncio.Lock()  # 🟢 Auto-login ပြိုင်တူမဝင်စေရန် Lock
 last_login_time = 0         # 🟢 နောက်ဆုံး Login ဝင်ခဲ့သည့် အချိန်ကို မှတ်ထားရန်
 
@@ -880,6 +880,7 @@ async def handle_topup(message: types.Message):
         }
         
         # 🟢 အတွင်းပိုင်း လုပ်ဆောင်ချက်များကိုလည်း Async Function အဖြစ် ကြေညာခြင်း
+        # 🟢 အတွင်းပိုင်း လုပ်ဆောင်ချက်များကိုလည်း Async Function အဖြစ် ကြေညာခြင်း
         async def try_redeem(api_type):
             if api_type == 'PH':
                 page_url = 'https://www.smile.one/ph/customer/activationcode'
@@ -900,14 +901,15 @@ async def handle_topup(message: types.Message):
             req_headers['Referer'] = base_referer
 
             try:
-                # 🟢 API ခေါ်ယူခြင်းများကို Thread ဖြင့် ခွဲထုတ်၍ Bot မထစ်စေရန် (Non-blocking) ပြုလုပ်ထားပါသည်
                 res = await asyncio.to_thread(scraper.get, page_url, headers=req_headers)
-                if "login" in res.url.lower(): return "expired", None
+                if "login" in res.url.lower() or res.status_code in [403, 503]: return "expired", None
 
                 soup = BeautifulSoup(res.text, 'html.parser')
                 csrf_token = soup.find('meta', {'name': 'csrf-token'})
                 csrf_token = csrf_token.get('content') if csrf_token else (soup.find('input', {'name': '_csrf'}).get('value') if soup.find('input', {'name': '_csrf'}) else None)
-                if not csrf_token: return "error", "❌ CSRF Token not obtained."
+                
+                # 🟢 CSRF မရပါက Error မပြတော့ဘဲ Auto-Login ခေါ်ရန် Expired ဟု သတ်မှတ်မည်
+                if not csrf_token: return "expired", None 
 
                 ajax_headers = req_headers.copy()
                 ajax_headers.update({'X-Requested-With': 'XMLHttpRequest', 'Origin': base_origin, 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'})
@@ -916,6 +918,14 @@ async def handle_topup(message: types.Message):
                 check_res = check_res_raw.json()
                 code_status = str(check_res.get('code', check_res.get('status', '')))
                 
+                # 🟢 API မှ ကတ်တန်ဖိုး (Face Value) ကို တိုက်ရိုက်ဆွဲထုတ်ခြင်း (System Delay ကို ကျော်ဖြတ်ရန်)
+                card_amount = 0.0
+                try:
+                    if 'data' in check_res and isinstance(check_res['data'], dict):
+                        val = check_res['data'].get('amount', check_res['data'].get('money', 0))
+                        if val: card_amount = float(val)
+                except: pass
+
                 if code_status in ['200', '201', '0', '1'] or 'success' in str(check_res.get('msg', '')).lower():
                     
                     old_bal = await get_smile_balance(scraper, headers, balance_check_url)
@@ -926,9 +936,18 @@ async def handle_topup(message: types.Message):
                     
                     if pay_status in ['200', '0', '1'] or 'success' in str(pay_res.get('msg', '')).lower():
                         await asyncio.sleep(5) 
-                        new_bal = await get_smile_balance(scraper, headers, balance_check_url)
+                        
+                        # 🟢 Cache မိနေခြင်းကို ရှောင်ရှားရန် URL နောက်တွင် Timestamp ထည့်ပေးခြင်း
+                        anti_cache_url = f"{balance_check_url}?_t={int(time.time())}"
+                        new_bal = await get_smile_balance(scraper, headers, anti_cache_url)
+                        
                         bal_key = 'br_balance' if api_type == 'BR' else 'ph_balance'
                         added = round(new_bal[bal_key] - old_bal[bal_key], 2)
+                        
+                        # 🟢 အကယ်၍ Website က Balance ကြန့်ကြာနေပါက API မှရသော ကတ်တန်ဖိုးကို အသုံးပြုမည်
+                        if added <= 0 and card_amount > 0:
+                            added = card_amount
+                            
                         return "success", added
                     else:
                         return "fail", "Payment failed."
@@ -975,9 +994,9 @@ async def handle_topup(message: types.Message):
                     elif added_amount >= 5000:
                         fee_percent = 0.15
                     elif added_amount >= 1000:
-                        fee_percent = 0.20
+                        fee_percent = 0.2
                     else:
-                        fee_percent = 0.30
+                        fee_percent = 0.3
 
                 fee_amount = round(added_amount * (fee_percent / 100), 2)
                 net_added = round(added_amount - fee_amount, 2)
@@ -1163,7 +1182,7 @@ async def execute_buy_process(message, lines, regex_pattern, currency, packages_
                         success_count += 1
                         total_spent += item['price']
                         order_ids_str += f"{result['order_id']}\n" 
-                        await asyncio.sleep(random.randint(2, 5)) 
+                        await asyncio.sleep(0.5) 
                     else:
                         fail_count += 1
                         error_msg = result['message']
@@ -1384,7 +1403,7 @@ async def schedule_daily_cookie_renewal():
         await asyncio.sleep(wait_seconds)
         
         print(f"[{datetime.datetime.now(MMT).strftime('%I:%M %p')}] 🚀 Executing Proactive Cookie Renewal...")
-        try: await bot.send_message(OWNER_ID, "🔄 <b>System:</b> Executing daily proactive cookie renewal (6:30 AM)...", parse_mode=ParseMode.HTML)
+        try: await bot.send_message(OWNER_ID, "🎉 <b>System:</b> Executing daily proactive cookie renewal.", parse_mode=ParseMode.HTML)
         except Exception: pass
 
         success = await auto_login_and_get_cookie()
