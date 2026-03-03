@@ -9,6 +9,7 @@ import random
 from dotenv import load_dotenv
 import asyncio
 from playwright.async_api import async_playwright
+from aiogram import BaseMiddleware
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram import types
 import html
@@ -1496,107 +1497,110 @@ async def check_cookie_status(message: types.Message):
 
 @dp.message(or_f(Command("role"), F.text.regexp(r"(?i)^\.role(?:$|\s+)")))
 async def handle_check_role(message: types.Message):
-    if not await is_authorized(message.from_user.id):
-        return await message.reply("ɴᴏᴛ ᴀᴜᴛʜᴏʀɪᴢᴇᴅ ᴜsᴇʀ.")
 
+    if not await is_authorized(message.from_user.id): return await message.reply("ɴᴏᴛ ᴀᴜᴛʜᴏʀɪᴢᴇᴅ ᴜsᴇʀ.")
     match = re.search(r"(?i)^[./]?role\s+(\d+)\s*[\(]?\s*(\d+)\s*[\)]?", message.text.strip())
-    if not match:
-        return await message.reply("❌ Invalid format:\n(Example - `.role 123456789 12345` or `/role 123456789 (12345)`)")
-
-    game_id = match.group(1).strip()
-    zone_id = match.group(2).strip()
+    if not match: return await message.reply("❌ Invalid format. Use: `.role 12345678 1234`")
     
-    loading_msg = await message.reply("Search region")
+    game_id, zone_id = match.group(1).strip(), match.group(2).strip()
+    loading_msg = await message.reply("Checking region", parse_mode=ParseMode.HTML)
 
-    scraper = await get_main_scraper()
+    url = 'https://coldofficialstore.com/api/name-checker/mlbb'
+    params = {
+        'user_id': game_id,
+        'server_id': zone_id,
+    }
     
-    main_url = 'https://www.smile.one/merchant/mobilelegends'
-    checkrole_url = 'https://www.smile.one/merchant/mobilelegends/checkrole'
-    headers = {'X-Requested-With': 'XMLHttpRequest', 'Referer': main_url, 'Origin': 'https://www.smile.one'}
+    headers = {
+        'Accept': 'application/json, text/plain, */*',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'Pragma': 'no-cache',
+        'Referer': 'https://coldofficialstore.com/name-checker',
+        'Sec-Fetch-Dest': 'empty',
+        'Sec-Fetch-Mode': 'cors',
+        'Sec-Fetch-Site': 'same-origin',
+        'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36',
+    }
 
     try:
-        res = await asyncio.to_thread(scraper.get, main_url, headers=headers)
-        soup = BeautifulSoup(res.text, 'html.parser')
+        async with AsyncSession(impersonate="chrome120") as local_scraper:
+            res = await local_scraper.get(url, params=params, headers=headers, timeout=15)
         
-        csrf_token = None
-        meta_tag = soup.find('meta', {'name': 'csrf-token'})
-        if meta_tag: csrf_token = meta_tag.get('content')
-        else:
-            csrf_input = soup.find('input', {'name': '_csrf'})
-            if csrf_input: csrf_token = csrf_input.get('value')
-
-        if not csrf_token:
-            return await loading_msg.edit_text("❌ CSRF Token not found. Add a new Cookie using /setcookie.")
-
-        check_data = {'user_id': game_id, 'zone_id': zone_id, '_csrf': csrf_token}
-        role_response_raw = await asyncio.to_thread(scraper.post, checkrole_url, data=check_data, headers=headers)
-        
-        try: 
-            role_result = role_response_raw.json()
-        except: 
-            return await loading_msg.edit_text("❌ Cannot verify. (Smile API Error)")
-            
-        ig_name = role_result.get('username') or role_result.get('data', {}).get('username')
-        
-        if not ig_name or str(ig_name).strip() == "":
-            real_error = role_result.get('msg') or role_result.get('message') or "Account not found."
-            if "login" in str(real_error).lower() or "unauthorized" in str(real_error).lower():
-                return await loading_msg.edit_text("⚠️ Cookie expired. Please add a new one using `/setcookie`.")
-            return await loading_msg.edit_text(f"❌ **Invalid Account:**\n{real_error}")
-
-        smile_region = role_result.get('zone') or role_result.get('region') or role_result.get('data', {}).get('zone') or "Unknown"
-
-        pizzo_region = "Unknown"
         try:
-            pizzo_headers = {
-                'authority': 'pizzoshop.com',
-                'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-                'content-type': 'application/x-www-form-urlencoded',
-                'origin': 'https://pizzoshop.com',
-                'referer': 'https://pizzoshop.com/mlchecker',
-                'user-agent': 'Mozilla/5.0'
-            }
-            await asyncio.to_thread(scraper.get, "https://pizzoshop.com/mlchecker", headers=pizzo_headers, timeout=10)
-            pizzo_res_raw = await asyncio.to_thread(scraper.post, "https://pizzoshop.com/mlchecker/check", data={'user_id': game_id, 'zone_id': zone_id}, headers=pizzo_headers, timeout=15)
-            pizzo_soup = BeautifulSoup(pizzo_res_raw.text, 'html.parser')
-            table = pizzo_soup.find('table', class_='table-modern')
+            data = res.json()
+        except Exception:
+            return await loading_msg.edit_text(f"❌ API Error: Invalid Response.\n\n<code>{res.text[:100]}...</code>", parse_mode=ParseMode.HTML)
+
+        user_data = data.get('data', {})
+        ig_name = user_data.get('username', 'Unknown')
+        
+        if not ig_name or str(ig_name).strip() == "" or ig_name == 'Unknown':
+            return await loading_msg.edit_text("❌ **Invalid Account:** Game ID or Zone ID is incorrect or not found.", parse_mode=ParseMode.HTML)
             
-            if table:
-                for row in table.find_all('tr'):
-                    th, td = row.find('th'), row.find('td')
-                    if th and td and ('region id' in th.get_text(strip=True).lower() or 'region' in th.get_text(strip=True).lower()):
-                        pizzo_region = td.get_text(strip=True)
-        except: pass
+        country_code = user_data.get('country', 'Unknown')
+        country_map = {"MM": "Myanmar", "MY": "Malaysia", "PH": "Philippines", "ID": "Indonesia", "BR": "Brazil", "SG": "Singapore", "KH": "Cambodia", "TH": "Thailand"}
+        final_region = country_map.get(str(country_code).upper(), country_code)
 
-        final_region = pizzo_region if pizzo_region != "Unknown" else smile_region
+        limit_50 = limit_150 = limit_250 = limit_500 = True 
+        
+        bonus_limits = data.get('data2', {}).get('bonus_limit', [])
+        for item in bonus_limits:
+            title = str(item.get('title', ''))
+            reached_limit = item.get('reached_limit', True) 
+            
+            if "50+50" in title: limit_50 = reached_limit
+            elif "150+150" in title: limit_150 = reached_limit
+            elif "250+250" in title: limit_250 = reached_limit
+            elif "500+500" in title: limit_500 = reached_limit
 
-        report = f"ɢᴀᴍᴇ ɪᴅ : {game_id} ({zone_id})\nɪɢɴ ɴᴀᴍᴇ : {ig_name}\nʀᴇɢɪᴏɴ : {final_region}"
-        await loading_msg.edit_text(report)
+        style_50 = "danger" if limit_50 else "success"
+        style_150 = "danger" if limit_150 else "success"
+        style_250 = "danger" if limit_250 else "success"
+        style_500 = "danger" if limit_500 else "success"
 
-    except Exception as e:
-        await loading_msg.edit_text(f"❌ System Error: {str(e)}")
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="Bᴏɴᴜs 50+50", callback_data="ignore", style=style_50),
+                InlineKeyboardButton(text="Bᴏɴᴜs 150+150", callback_data="ignore", style=style_150)
+            ],
+            [
+                InlineKeyboardButton(text="Bᴏɴᴜs 250+250", callback_data="ignore", style=style_250),
+                InlineKeyboardButton(text="Bᴏɴᴜs 500+500", callback_data="ignore", style=style_500)
+            ]
+        ])
+
+        final_report = (
+            f"<u><b>Mᴏʙɪʟᴇ Lᴇɢᴇɴᴅs Bᴀɴɢ Bᴀɴɢ</b></u>\n\n"
+            f"🆔 <code>{'User ID' :<9}:</code> <code>{game_id}</code> (<code>{zone_id}</code>)\n"
+            f"👤 <code>{'Nickname':<9}:</code> {ig_name}\n"
+            f"🌍 <code>{'Region'  :<9}:</code> {final_region}\n"
+            f"────────────────\n\n"
+            f"🎁 <b>Fɪʀsᴛ Rᴇᴄʜᴀʀɢᴇ Bᴏɴᴜs Sᴛᴀᴛᴜs</b>"
+        )
+
+        await loading_msg.edit_text(final_report, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+    except Exception as e: 
+        await loading_msg.edit_text(f"❌ System Error: {str(e)}", parse_mode=ParseMode.HTML)
 
 
 # ==========================================
 # 🔍 1. DISPUTE & VERIFICATION COMMAND (GAME ID + ORDER ID SEARCH)
 # ==========================================
-import datetime 
-
 @dp.message(or_f(Command("checkcus"), Command("cus"), F.text.regexp(r"(?i)^\.(?:checkcus|cus)(?:$|\s+)")))
 async def check_official_customer(message: types.Message):
     tg_id = str(message.from_user.id)
-    
     is_owner = (message.from_user.id == OWNER_ID)
     user_data = await db.get_reseller(tg_id) 
     
     if not is_owner and not user_data:
-        return await message.reply("❌ You are not authorized. Only registered users can use this command.")
+        return await message.reply("❌ You are not authorized.")
         
     parts = message.text.strip().split()
     if len(parts) < 2:
-        return await message.reply("⚠️ <b>Usage:</b> <code>.cus <Game_ID></code> သို့မဟုတ် <code>.cus <Order_ID></code>", parse_mode=ParseMode.HTML)
+        return await message.reply("⚠️ <b>Usage:</b> <code>.cus <Game_ID></code>", parse_mode=ParseMode.HTML)
         
-    # 🟢 Game ID ဖြစ်စေ၊ Order ID ဖြစ်စေ လက်ခံမည်
     search_query = parts[1]
     loading_msg = await message.reply(f"Deep Searching Official Records for: <code>{search_query}</code>...", parse_mode=ParseMode.HTML)
     
@@ -1604,7 +1608,7 @@ async def check_official_customer(message: types.Message):
     headers = {'X-Requested-With': 'XMLHttpRequest', 'Origin': 'https://www.smile.one'}
     
     urls_to_check = [
-        'https://www.smile.one/customer/activationcode/codelist',
+        'https://www.smile.one/customer/activationcode/codelist', 
         'https://www.smile.one/ph/customer/activationcode/codelist'
     ]
     
@@ -1614,59 +1618,50 @@ async def check_official_customer(message: types.Message):
     try:
         for api_url in urls_to_check:
             for page_num in range(1, 11): 
-                res = await asyncio.to_thread(
-                    scraper.get, api_url, 
+                res = await scraper.get(
+                    api_url, 
                     params={'type': 'orderlist', 'p': str(page_num), 'pageSize': '50'}, 
                     headers=headers, timeout=15
                 )
                 try:
                     data = res.json()
-                    if 'list' in data and isinstance(data['list'], list) and len(data['list']) > 0:
+                    if 'list' in data and len(data['list']) > 0:
                         for order in data['list']:
                             current_user_id = str(order.get('user_id') or order.get('role_id') or '')
                             order_id = str(order.get('increment_id') or order.get('id') or '')
                             status_val = str(order.get('order_status', '') or order.get('status', '')).lower()
                             
-                            # 🟢 ရှာဖွေသည့်စာသားသည် Game ID နှင့်ဖြစ်စေ၊ Order ID နှင့်ဖြစ်စေ ကိုက်ညီမှုရှိမရှိ နှစ်မျိုးလုံး စစ်ဆေးမည်
                             if (current_user_id == search_query or order_id == search_query) and status_val in ['success', '1']:
                                 if order_id not in seen_ids:
                                     seen_ids.add(order_id)
                                     found_orders.append(order)
-                    else:
+                    else: 
                         break 
-                except:
+                except: 
                     break
                 
-        if not found_orders:
-            return await loading_msg.edit_text(f"❌ No successful records found for: <code>{search_query}</code> in recent transactions.", parse_mode=ParseMode.HTML)
+        if not found_orders: 
+            return await loading_msg.edit_text(f"❌ No successful records found for: <code>{search_query}</code>", parse_mode=ParseMode.HTML)
             
         found_orders = found_orders[:1] 
-        
-        report = f"🔍 <b>Official Records for {search_query}</b>\n\n"
+        report = f"🎉<b>Oғғɪᴄɪᴀʟ Rᴇᴄᴏʀᴅs ғᴏʀ {search_query}</b>\n\n"
         
         for order in found_orders:
             serial_id = str(order.get('increment_id') or order.get('id') or 'Unknown Serial')
-            date_str = str(order.get('created_at') or order.get('updated_at') or order.get('create_time') or order.get('insert_time') or order.get('add_time') or order.get('pay_time') or '')
+            date_str = str(order.get('created_at') or order.get('updated_at') or order.get('create_time') or '')
             currency_sym = str(order.get('total_fee_currency') or '$')
             
             date_display = date_str
             if date_str:
                 try:
                     dt_obj = datetime.datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S")
-                    
-                    if currency_sym == 'BRL':
-                        mmt_dt = dt_obj + datetime.timedelta(hours=9, minutes=30)
-                    elif currency_sym == 'PHP':
-                        mmt_dt = dt_obj - datetime.timedelta(hours=1, minutes=30)
-                    else:
-                        mmt_dt = dt_obj + datetime.timedelta(hours=9, minutes=30)
-                        
+                    mmt_dt = dt_obj + datetime.timedelta(hours=9, minutes=30)
                     mm_time_str = mmt_dt.strftime("%I:%M:%S %p") 
                     date_display = f"{date_str} ( MM - {mm_time_str} )"
                 except Exception:
                     date_display = date_str
 
-            raw_item_name = str(order.get('product_name') or order.get('goods_name') or order.get('goods_title') or order.get('title') or order.get('name') or 'Unknown Item')
+            raw_item_name = str(order.get('product_name') or order.get('goods_name') or order.get('title') or 'Unknown Item')
             raw_item_name = raw_item_name.replace("Mobile Legends BR - ", "").replace("Mobile Legends - ", "").strip()
             
             translations = {
@@ -1693,11 +1688,11 @@ async def check_official_customer(message: types.Message):
             raw_item_name = raw_item_name.strip()
             
             if currency_sym == 'PHP':
-                final_item_name = f"Mobile Legends PH - {raw_item_name}"
+                final_item_name = f"{raw_item_name}"
             else:
-                final_item_name = f"Mobile Legends BR - {raw_item_name}"
+                final_item_name = f"{raw_item_name}"
             
-            price = str(order.get('price') or order.get('grand_total') or order.get('transaction_amount') or order.get('real_money') or order.get('pay_amount') or order.get('money') or order.get('amount') or order.get('total_amount') or '0.00')
+            price = str(order.get('price') or order.get('grand_total') or order.get('real_money') or '0.00')
             if currency_sym != '$':
                 price_display = f"{price} {currency_sym}"
             else:
@@ -1706,8 +1701,7 @@ async def check_official_customer(message: types.Message):
             report += f"🏷 <code>{serial_id}</code>\n📅 <code>{date_display}</code>\n💎 {final_item_name} ({price_display})\n📊 Status: ✅ Success\n\n"
             
         await loading_msg.edit_text(report, parse_mode=ParseMode.HTML)
-        
-    except Exception as e:
+    except Exception as e: 
         await loading_msg.edit_text(f"❌ Search Error: {str(e)}", parse_mode=ParseMode.HTML)
         
 
@@ -1971,6 +1965,55 @@ async def format_and_copy_text(message: types.Message):
     
     await message.reply(formatted_text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
 
+
+@dp.message(or_f(Command("scam"), F.text.regexp(r"(?i)^\.scam(?:$|\s+)")))
+async def add_scam_id(message: types.Message):
+    if message.from_user.id != OWNER_ID: 
+        return await message.reply("❌ Only Owner can use this command.")
+        
+    parts = message.text.strip().split()
+    if len(parts) < 2:
+        return await message.reply("⚠️ **Usage:** `.scam <Game_ID>`\nဥပမာ: `.scam 123456789`")
+        
+    scam_id = parts[1].strip()
+    if not scam_id.isdigit():
+        return await message.reply("❌ Invalid Game ID. ဂဏန်းများသာ ရိုက်ထည့်ပါ။")
+        
+    await db.add_scammer(scam_id)
+    GLOBAL_SCAMMERS.add(scam_id)
+    
+    await message.reply(f"🚨 **Scammer ID Added:** <code>{scam_id}</code>\n✅ ဤ ID ကို Blacklist သို့ ထည့်သွင်းပြီးပါပြီ။ တွေ့တာနဲ့ Bot မှ အလိုအလျောက် သတိပေးပါတော့မည်။", parse_mode=ParseMode.HTML)
+
+@dp.message(or_f(Command("unscam"), F.text.regexp(r"(?i)^\.unscam(?:$|\s+)")))
+async def remove_scam_id(message: types.Message):
+    if message.from_user.id != OWNER_ID: 
+        return await message.reply("❌ Only Owner can use this command.")
+        
+    parts = message.text.strip().split()
+    if len(parts) < 2:
+        return await message.reply("⚠️ **Usage:** `.unscam <Game_ID>`")
+        
+    scam_id = parts[1].strip()
+    
+    removed = await db.remove_scammer(scam_id)
+    GLOBAL_SCAMMERS.discard(scam_id)
+    
+    if removed:
+        await message.reply(f"✅ **Scammer ID Removed:** <code>{scam_id}</code>\nBlacklist ထဲမှ အောင်မြင်စွာ ဖယ်ရှားလိုက်ပါပြီ။", parse_mode=ParseMode.HTML)
+    else:
+        await message.reply(f"⚠️ ထို ID သည် Scammer စာရင်းထဲတွင် မရှိပါ။")
+
+@dp.message(or_f(Command("scamlist"), F.text.regexp(r"(?i)^\.scamlist$")))
+async def show_scam_list(message: types.Message):
+    if message.from_user.id != OWNER_ID: 
+        return await message.reply("❌ Only Owner can use this command.")
+        
+    if not GLOBAL_SCAMMERS:
+        return await message.reply("✅ ယခုလောလောဆယ် Blacklist သွင်းထားသော Scammer မရှိပါ။")
+        
+    scam_text = "\n".join([f"🔸 <code>{sid}</code>" for sid in GLOBAL_SCAMMERS])
+    await message.reply(f"🚨 **Scammer Blacklist (Total: {len(GLOBAL_SCAMMERS)}):**\n\n{scam_text}", parse_mode=ParseMode.HTML)
+
 ##############################################
 
 # ==========================================
@@ -2016,6 +2059,10 @@ async def send_help_message(message: types.Message):
             f"🔸 <code>.deduct ID 50 BR</code>  : Balance နှုတ်ယူရန်\n"
             f"<b>💼 VIP နှင့် စာရင်းစစ်</b>\n"
             f"🔸 <code>.checkcus ID</code> : Official မှတ်တမ်း လှမ်းစစ်ရန်\n"
+            f"<b>🚨 Scammer စီမံခန့်ခွဲမှု</b>\n"
+            f"🔸 <code>.scam ID</code>     : Scammer စာရင်းသွင်းရန်\n"
+            f"🔸 <code>.unscam ID</code>   : Scammer စာရင်းမှပယ်ဖျက်ရန်\n"
+            f"🔸 <code>.scamlist</code>    : Scammer အားလုံးကြည့်ရန်\n"
             f"🔸 <code>.topcus</code>      : ငွေအများဆုံးသုံးထားသူများ ကြည့်ရန်\n"
             f"🔸 <code>.setvip ID</code>   : VIP အဖြစ် သတ်မှတ်ရန်/ဖြုတ်ရန်\n\n"
             f"<b>⚙️ System Setup</b>\n"
@@ -2084,6 +2131,16 @@ async def main():
     # 🟢 Concurrency အတွက် Thread Pool Limit
     loop = asyncio.get_running_loop()
     loop.set_default_executor(concurrent.futures.ThreadPoolExecutor(max_workers=50))
+    
+    global GLOBAL_SCAMMERS
+    try:
+        scammer_list = await db.get_all_scammers()
+        GLOBAL_SCAMMERS = set(scammer_list)
+        print(f"Loaded {len(GLOBAL_SCAMMERS)} Scammer IDs.")
+    except Exception as e:
+        print(f"Error loading scammers: {e}")
+
+    dp.message.middleware(ScamAlertMiddleware())
     
     # Background Tasks များကို Event Loop ပေါ်တင်ပေးခြင်း
     asyncio.create_task(keep_cookie_alive())
