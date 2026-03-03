@@ -1966,6 +1966,24 @@ async def format_and_copy_text(message: types.Message):
     await message.reply(formatted_text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
 
 
+class ScamAlertMiddleware(BaseMiddleware):
+    async def __call__(self, handler, event: types.Message, data: dict):
+        if event.text:
+            text_lower = event.text.lower()
+            
+            if text_lower.startswith(".scam ") or text_lower.startswith(".unscam ") or text_lower.startswith("/scam") or text_lower.startswith("/unscam"):
+                return await handler(event, data)
+                
+            for scam_id in GLOBAL_SCAMMERS:
+                pattern = rf"\b{scam_id}\b"
+                if re.search(pattern, event.text):
+                    await event.reply(
+                        "Scamer game id , Scamer Alert!",
+                        parse_mode=ParseMode.HTML
+                    )
+                    break 
+        return await handler(event, data)
+
 @dp.message(or_f(Command("scam"), F.text.regexp(r"(?i)^\.scam(?:$|\s+)")))
 async def add_scam_id(message: types.Message):
     if message.from_user.id != OWNER_ID: 
