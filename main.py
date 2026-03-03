@@ -52,7 +52,7 @@ dp = Dispatcher()
 # 🚀 ADVANCED CONCURRENCY & LOCK SYSTEM
 # ==========================================
 user_locks = defaultdict(asyncio.Lock)
-api_semaphore = asyncio.Semaphore(20) 
+api_semaphore = asyncio.Semaphore(3) 
 auth_lock = asyncio.Lock()  # 🟢 Auto-login ပြိုင်တူမဝင်စေရန် Lock
 last_login_time = 0         # 🟢 နောက်ဆုံး Login ဝင်ခဲ့သည့် အချိန်ကို မှတ်ထားရန်
 
@@ -958,9 +958,9 @@ async def handle_topup(message: types.Message):
                     elif added_amount >= 5000:
                         fee_percent = 0.15
                     elif added_amount >= 1000:
-                        fee_percent = 0.20
+                        fee_percent = 0.2
                     else:
-                        fee_percent = 0.30
+                        fee_percent = 0.3
 
                 fee_amount = round(added_amount * (fee_percent / 100), 2)
                 net_added = round(added_amount - fee_amount, 2)
