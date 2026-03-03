@@ -18,6 +18,7 @@ import concurrent.futures
 
 # 🟢 curl_cffi ကို Import လုပ်ခြင်း (Cloudflare ကိုကျော်ရန်)
 from curl_cffi import requests as cffi_requests
+#from curl_cffi.requests import AsyncSession
 
 # 🟢 Aiogram 3 Imports
 from aiogram import Bot, Dispatcher, F, types
@@ -1494,6 +1495,7 @@ async def check_cookie_status(message: types.Message):
     except Exception as e:
         await loading_msg.edit_text(f"❌ Error checking cookie: {str(e)}")
 
+from curl_cffi.requests import AsyncSession
 
 @dp.message(or_f(Command("role"), F.text.regexp(r"(?i)^\.role(?:$|\s+)")))
 async def handle_check_role(message: types.Message):
@@ -1525,7 +1527,7 @@ async def handle_check_role(message: types.Message):
     }
 
     try:
-        async with async_playwright(impersonate="chrome120") as local_scraper:
+        async with AsyncSession(impersonate="chrome120") as local_scraper:
             res = await local_scraper.get(url, params=params, headers=headers, timeout=15)
         
         try:
