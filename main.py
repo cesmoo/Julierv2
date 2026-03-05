@@ -339,7 +339,7 @@ async def process_smile_one_order(game_id, zone_id, product_id, currency_name, p
             soup = BeautifulSoup(response.text, 'html.parser')
             meta_tag = soup.find('meta', {'name': 'csrf-token'})
             csrf_token = meta_tag.get('content') if meta_tag else (soup.find('input', {'name': '_csrf'}).get('value') if soup.find('input', {'name': '_csrf'}) else None)
-            if not csrf_token: return {"status": "error", "message": "CSRF Token not found. Re-add Cookie."}
+            if not csrf_token: return {"status": "error", "message": "CSRF Token not found. Re-add Cookie.", "ig_name": ig_name}
             GLOBAL_CSRF[cache_key] = csrf_token
 
         async def get_flow_id():
@@ -356,37 +356,39 @@ async def process_smile_one_order(game_id, zone_id, product_id, currency_name, p
             query_response_raw, role_response_raw = await asyncio.gather(get_flow_id(), check_role())
             try:
                 role_result = role_response_raw.json()
-                ig_name = role_result.get('username') or role_result.get('data', {}).get('username')
-                if not ig_name or str(ig_name).strip() == "":
-                    return {"status": "error", "message": "❌ Invalid Account: Account not found."}
+                fetched_name = role_result.get('username') or role_result.get('data', {}).get('username')
+                # 🟢 နာမည်ကို ဖမ်းယူပြီး ig_name ထဲသို့ ထည့်မည်
+                if fetched_name and str(fetched_name).strip() != "":
+                    ig_name = str(fetched_name).strip()
+                else:
+                    return {"status": "error", "message": "❌ Invalid Account: Account not found.", "ig_name": "Unknown"}
             except Exception: 
-                return {"status": "error", "message": "Check Role API Error."}
+                return {"status": "error", "message": "Check Role API Error.", "ig_name": ig_name}
 
         try: query_result = query_response_raw.json()
-        except Exception: return {"status": "error", "message": "Query API Error"}
+        except Exception: return {"status": "error", "message": "Query API Error", "ig_name": ig_name}
             
         flowid = query_result.get('flowid') or query_result.get('data', {}).get('flowid')
         
         if not flowid:
-            # 🟢 ပြင်ဆင်ချက် ၁: info ထဲက စာသားကိုပါ ဖမ်းယူမည်
             real_error = query_result.get('msg') or query_result.get('message') or query_result.get('info') or ""
             
             if "login" in str(real_error).lower() or "unauthorized" in str(real_error).lower():
                 GLOBAL_CSRF[cache_key] = None
                 await notify_owner("⚠️ <b>Order Alert:</b> Cookie expired. Auto-login started...")
                 success = await auto_login_and_get_cookie()
-                if success: return {"status": "error", "message": "Session renewed. Please try again."}
-                else: return {"status": "error", "message": "❌ Auto-Login failed. Please /setcookie."}
+                if success: return {"status": "error", "message": "Session renewed. Please try again.", "ig_name": ig_name}
+                else: return {"status": "error", "message": "❌ Auto-Login failed. Please /setcookie.", "ig_name": ig_name}
                 
-            # 🟢 ပြင်ဆင်ချက် ၂: info စာသား အပြည့်အစုံ ပြန်ပို့ပေးမည် (execute_buy_process မှ Ban Server ဟု ခွဲခြားနိုင်ရန်)
-            return {"status": "error", "message": str(real_error)}
+            # 🟢 Error ဖြစ်လျှင်လည်း ဖမ်းထားသော နာမည်ကို ပြန်ထည့်ပေးမည်
+            return {"status": "error", "message": str(real_error), "ig_name": ig_name}
 
         pay_data = {'_csrf': csrf_token, 'user_id': game_id, 'zone_id': zone_id, 'pay_methond': 'smilecoin', 'product_id': product_id, 'channel_method': 'smilecoin', 'flowid': flowid, 'email': '', 'coupon_id': ''}
         pay_response_raw = await scraper.post(pay_url, data=pay_data, headers=headers)
         pay_text = pay_response_raw.text.lower()
         
         if "saldo insuficiente" in pay_text or "insufficient" in pay_text:
-            return {"status": "error", "message": "Insufficient balance in the Main account."}
+            return {"status": "error", "message": "Insufficient balance in the Main account.", "ig_name": ig_name}
         
         real_order_id, is_success = "Not found", False
         actual_product_name = ""
@@ -396,7 +398,6 @@ async def process_smile_one_order(game_id, zone_id, product_id, currency_name, p
             status_val = str(pay_json.get('status', ''))
             code = str(pay_json.get('code', status_val))
             
-            # 🟢 ပြင်ဆင်ချက် ၃: pay_json တွင်လည်း info ပါလာပါက ဖမ်းယူမည်
             msg = str(pay_json.get('msg') or pay_json.get('message') or pay_json.get('info') or "").lower()
             
             if code in ['200', '0', '1'] or 'success' in msg: 
@@ -429,12 +430,12 @@ async def process_smile_one_order(game_id, zone_id, product_id, currency_name, p
         if is_success:
             return {"status": "success", "ig_name": ig_name, "order_id": real_order_id, "csrf_token": csrf_token, "product_name": actual_product_name}
         else:
-            # Pay မအောင်မြင်ပါက အတိအကျ Error Message ကို ပြန်ပို့မည်
             error_detail = pay_json.get('msg') or pay_json.get('message') or pay_json.get('info') if 'pay_json' in locals() else "Payment Verification Failed."
-            return {"status": "error", "message": str(error_detail)}
+            # 🟢 Pay ငွေဖြတ်ရာတွင် Error ဖြစ်လျှင်လည်း ဖမ်းထားသော နာမည်ကို ပြန်ထည့်ပေးမည်
+            return {"status": "error", "message": str(error_detail), "ig_name": ig_name}
 
     except Exception as e: 
-        return {"status": "error", "message": f"System Error: {str(e)}"}
+        return {"status": "error", "message": f"System Error: {str(e)}", "ig_name": known_ig_name}
 
 async def process_mcc_order(game_id, zone_id, product_id, currency_name, prev_context=None, skip_role_check=False, known_ig_name="Unknown", last_success_order_id=""):
     scraper = await get_main_scraper()
@@ -468,12 +469,12 @@ async def process_mcc_order(game_id, zone_id, product_id, currency_name, prev_co
         if not csrf_token:
             response = await scraper.get(main_url, headers=headers)
             if response.status_code in [403, 503] or "cloudflare" in response.text.lower():
-                 return {"status": "error", "message": "Blocked by Cloudflare."}
+                 return {"status": "error", "message": "Blocked by Cloudflare.", "ig_name": ig_name}
 
             soup = BeautifulSoup(response.text, 'html.parser')
             meta_tag = soup.find('meta', {'name': 'csrf-token'})
             csrf_token = meta_tag.get('content') if meta_tag else (soup.find('input', {'name': '_csrf'}).get('value') if soup.find('input', {'name': '_csrf'}) else None)
-            if not csrf_token: return {"status": "error", "message": "CSRF Token not found. Add a new Cookie using /setcookie."}
+            if not csrf_token: return {"status": "error", "message": "CSRF Token not found. Add a new Cookie using /setcookie.", "ig_name": ig_name}
             GLOBAL_CSRF[cache_key] = csrf_token
 
         async def get_flow_id():
@@ -490,35 +491,39 @@ async def process_mcc_order(game_id, zone_id, product_id, currency_name, prev_co
             query_response_raw, role_response_raw = await asyncio.gather(get_flow_id(), check_role())
             try:
                 role_result = role_response_raw.json()
-                ig_name = role_result.get('username') or role_result.get('data', {}).get('username')
-                if not ig_name or str(ig_name).strip() == "":
-                    return {"status": "error", "message": "Account not found."}
+                fetched_name = role_result.get('username') or role_result.get('data', {}).get('username')
+                if fetched_name and str(fetched_name).strip() != "":
+                    ig_name = str(fetched_name).strip()
+                else:
+                    return {"status": "error", "message": "Account not found.", "ig_name": "Unknown"}
             except Exception: 
-                return {"status": "error", "message": "⚠️ Check Role API Error."}
+                return {"status": "error", "message": "⚠️ Check Role API Error.", "ig_name": ig_name}
 
         try: query_result = query_response_raw.json()
-        except Exception: return {"status": "error", "message": "Query API Error"}
+        except Exception: return {"status": "error", "message": "Query API Error", "ig_name": ig_name}
             
         flowid = query_result.get('flowid') or query_result.get('data', {}).get('flowid')
         
         if not flowid:
-            real_error = query_result.get('msg') or query_result.get('message') or ""
+            real_error = query_result.get('msg') or query_result.get('message') or query_result.get('info') or ""
             if "login" in str(real_error).lower() or "unauthorized" in str(real_error).lower():
                 GLOBAL_CSRF[cache_key] = None
                 await notify_owner("⚠️ <b>Order Alert:</b> Cookie expired. Auto-login started...")
                 success = await auto_login_and_get_cookie()
                 if success:
-                    return {"status": "error", "message": "Session renewed. Please enter the command again."}
+                    return {"status": "error", "message": "Session renewed. Please enter the command again.", "ig_name": ig_name}
                 else: 
-                    return {"status": "error", "message": "❌ Auto-Login failed. Please provide /setcookie."}
-            return {"status": "error", "message": "Invalid account or unable to purchase."}
+                    return {"status": "error", "message": "❌ Auto-Login failed. Please provide /setcookie.", "ig_name": ig_name}
+            
+            error_display = str(real_error) if real_error else "Invalid account or unable to purchase."
+            return {"status": "error", "message": error_display, "ig_name": ig_name}
 
         pay_data = {'_csrf': csrf_token, 'user_id': game_id, 'zone_id': zone_id, 'pay_methond': 'smilecoin', 'product_id': product_id, 'channel_method': 'smilecoin', 'flowid': flowid, 'email': '', 'coupon_id': ''}
         pay_response_raw = await scraper.post(pay_url, data=pay_data, headers=headers)
         pay_text = pay_response_raw.text.lower()
         
         if "saldo insuficiente" in pay_text or "insufficient" in pay_text:
-            return {"status": "error", "message": "Insufficient balance in the Main account."}
+            return {"status": "error", "message": "Insufficient balance in the Main account.", "ig_name": ig_name}
         
         real_order_id, is_success = "Not found", False
         actual_product_name = ""
@@ -527,7 +532,7 @@ async def process_mcc_order(game_id, zone_id, product_id, currency_name, prev_co
             pay_json = pay_response_raw.json()
             status_val = str(pay_json.get('status', ''))
             code = str(pay_json.get('code', status_val))
-            msg = str(pay_json.get('msg', pay_json.get('message', ''))).lower()
+            msg = str(pay_json.get('msg') or pay_json.get('message') or pay_json.get('info') or "").lower()
             
             if code in ['200', '0', '1'] or 'success' in msg: 
                 is_success = True
@@ -559,9 +564,11 @@ async def process_mcc_order(game_id, zone_id, product_id, currency_name, prev_co
         if is_success:
             return {"status": "success", "ig_name": ig_name, "order_id": real_order_id, "csrf_token": csrf_token, "product_name": actual_product_name}
         else:
-            return {"status": "error", "message": "Payment Verification Failed."}
+            error_detail = pay_json.get('msg') or pay_json.get('message') or pay_json.get('info') if 'pay_json' in locals() else "Payment Verification Failed."
+            return {"status": "error", "message": str(error_detail), "ig_name": ig_name}
 
-    except Exception as e: return {"status": "error", "message": f"System Error: {str(e)}"}
+    except Exception as e: 
+        return {"status": "error", "message": f"System Error: {str(e)}", "ig_name": known_ig_name}
 
 async def is_authorized(user_id: int):
     if user_id == OWNER_ID:
@@ -877,7 +884,7 @@ async def execute_buy_process(message, lines, regex_pattern, currency, packages_
             raw_items_str = match.group(3).lower()
             
             requested_packages = raw_items_str.split()
-            packages_to_buy = [] # 🟢 Package တစ်ခုချင်းစီကို သီးခြားခွဲထုတ်မှတ်သားမည်
+            packages_to_buy = [] 
             not_found_pkgs = []
             
             for pkg in requested_packages:
@@ -926,7 +933,7 @@ async def execute_buy_process(message, lines, regex_pattern, currency, packages_
         user_v_bal = user_wallet.get(v_bal_key, 0.0) if user_wallet else 0.0
             
         start_time = time.time()
-        loading_msg = await message.reply(f"Order processing [ {len(parsed_orders)} | 0 ] ● ᥫ᭡")
+        loading_msg = await message.reply(f"Order processing[ {len(parsed_orders)} | 0 ] ● ᥫ᭡")
 
         current_v_bal = [user_v_bal] 
 
@@ -941,7 +948,7 @@ async def execute_buy_process(message, lines, regex_pattern, currency, packages_
             total_spent = 0.0
             
             ig_name = "Unknown"
-            package_results = [] # 🟢 Package တစ်ခုချင်းစီ၏ ရလဒ်များကို သိမ်းဆည်းရန်
+            package_results = [] 
 
             async with api_semaphore:
                 prev_context = None
@@ -1025,7 +1032,7 @@ async def execute_buy_process(message, lines, regex_pattern, currency, packages_
                 'fail_count': overall_fail_count, 
                 'total_spent': total_spent, 
                 'ig_name': ig_name,
-                'package_results': package_results # Package အလိုက် ရလဒ်များ
+                'package_results': package_results 
             }
 
         line_tasks = [process_order_line(order) for order in parsed_orders]
@@ -1033,28 +1040,43 @@ async def execute_buy_process(message, lines, regex_pattern, currency, packages_
         time_taken_seconds = int(time.time() - start_time)
         await loading_msg.delete() 
 
+        if not line_results: return
+
+        import datetime
+        now = datetime.datetime.now(MMT) 
+        date_str = now.strftime("%m/%d/%Y, %I:%M:%S %p")
+        
+        safe_username = html.escape(str(username_display))
+        
+        grand_success_count = 0
+        grand_fail_count = 0
+        grand_total_spent = 0.0
+
+        # 🟢 အားလုံးအတွက် Total Spent ကို ပေါင်းပြီးမှ Database ကို တစ်ခါတည်း Update လုပ်မည်
         for res in line_results:
-            import datetime
-            now = datetime.datetime.now(MMT) 
-            date_str = now.strftime("%m/%d/%Y, %I:%M:%S %p")
-            
-            safe_username = html.escape(str(username_display))
-            
-            initial_bal_for_receipt = user_v_bal
-            new_v_bal = user_v_bal
+            grand_success_count += res['success_count']
+            grand_fail_count += res['fail_count']
+            grand_total_spent += res['total_spent']
             
             if res['total_spent'] > 0:
                 if currency == 'BR': await db.update_balance(tg_id, br_amount=-res['total_spent'])
                 else: await db.update_balance(tg_id, ph_amount=-res['total_spent'])
                 
-                new_wallet = await db.get_reseller(tg_id)
-                new_v_bal = new_wallet.get(v_bal_key, 0.0) if new_wallet else 0.0
-                initial_bal_for_receipt = new_v_bal + res['total_spent']
+        new_wallet = await db.get_reseller(tg_id)
+        new_v_bal = new_wallet.get(v_bal_key, 0.0) if new_wallet else 0.0
+        initial_bal_for_receipt = new_v_bal + grand_total_spent
 
-            report = f"<blockquote><pre>{title_prefix} {res['game_id']} ({res['zone_id']}) {res['raw_items_str'].upper()} ({currency})\n"
-            report += f"=== TRANSACTION REPORT ===\n\n"
+        # 🟢 ဘေလ်ခေါင်းစဉ် (ID တစ်ခုတည်းဆိုလျှင် ID ပြမည်၊ အများကြီးဆိုလျှင် BATCH ORDERS ဟုပြမည်)
+        if len(line_results) == 1:
+            header_title = f"{title_prefix} {line_results[0]['game_id']} ({line_results[0]['zone_id']}) {line_results[0]['raw_items_str'].upper()} ({currency})"
+        else:
+            header_title = f"{title_prefix} BATCH ORDERS ({currency})"
+            
+        report = f"<blockquote><pre>{header_title}\n"
+        report += f"=== TRANSACTION REPORT ===\n\n"
 
-            # 🟢 Package တစ်ခုချင်းစီအတွက် Report Block ခွဲထုတ်ခြင်း
+        # 🟢 Order (Package) အားလုံးကို ဘေလ်တစ်ခုတည်းထဲသို့ စုထည့်ခြင်း
+        for res in line_results:
             for pr in res['package_results']:
                 safe_ig_name = html.escape(str(pr['ig_name']))
                 
@@ -1077,6 +1099,8 @@ async def execute_buy_process(message, lines, regex_pattern, currency, packages_
                         display_err = "Insufficient balance"
                     elif "invalid" in error_text or "not found" in error_text:
                         display_err = "Invalid Account"
+                    elif "query failed" in error_text:
+                        display_err = "Smileone website api error try again."
                     elif "limit" in error_text or "exceed" in error_text or "máximo" in error_text or "limite" in error_text:
                         display_err = "Weekly Pass Limit Exceeded"
                     elif "zone" in error_text or "region" in error_text or "country" in error_text or "indonesia" in error_text or "support recharge" in error_text or "Singapore" in error_text or "Russia" in error_text or "the Philippines" in error_text:
@@ -1095,14 +1119,15 @@ async def execute_buy_process(message, lines, regex_pattern, currency, packages_
                     report += f"ITEM         : {pr['pkg_name']} 💎\n"
                     report += f"ERROR        : {display_err}\n\n"
 
-            report += f"DATE         : {date_str}\n"
-            report += f"USERNAME     :\n{safe_username}\n"
-            report += f"INITIAL      : ${initial_bal_for_receipt:,.2f}\n"
-            report += f"FINAL        : ${new_v_bal:,.2f}\n\n"
-            report += f"SUCCESS {res['success_count']} / FAIL {res['fail_count']}\n"
-            report += f"TIME TAKEN   : {time_taken_seconds} SECONDS</pre></blockquote>"
+        # 🟢 နောက်ဆုံးမှသာ Balance သုံးစွဲမှုနှင့် အချိန်ကို တွက်ချက်ပြသခြင်း
+        report += f"DATE         : {date_str}\n"
+        report += f"USERNAME     :\n{safe_username}\n"
+        report += f"INITIAL      : ${initial_bal_for_receipt:,.2f}\n"
+        report += f"FINAL        : ${new_v_bal:,.2f}\n\n"
+        report += f"SUCCESS {grand_success_count} / FAIL {grand_fail_count}\n"
+        report += f"TIME TAKEN   : {time_taken_seconds} SECONDS</pre></blockquote>"
 
-            await message.reply(report, parse_mode=ParseMode.HTML)
+        await message.reply(report, parse_mode=ParseMode.HTML)
 
 @dp.message(F.text.regexp(r"(?i)^(?:msc|mlb|br|b)\s+\d+"))
 async def handle_br_mlbb(message: types.Message):
