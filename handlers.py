@@ -134,17 +134,27 @@ async def execute_buy_process(message, lines, regex_pattern, currency, packages_
                     if current_v_bal[0] < pkg_total_price:
                         pkg_fail_count = len(items)
                         pkg_error = "Insufficient balance for the full package"
-                    else:
-                        for item in items:
-                            if current_v_bal[0] < item['price']:
-                                pkg_fail_count += 1
-                                pkg_error = "Insufficient balance"
-                                break
+                        overall_fail_count += 1
+                        package_results.append({
+                            'pkg_name': pkg_name,
+                            'status': 'fail',
+                            'spent': 0.0,
+                            'order_ids': "",
+                            'error_msg': pkg_error,
+                            'ig_name': ig_name
+                        })
+                        continue
+                    
+                    for item in items:
+                        if current_v_bal[0] < item['price']:
+                            pkg_fail_count += 1
+                            pkg_error = "Insufficient balance"
+                            break
 
-                            current_v_bal[0] -= item['price']
+                        current_v_bal[0] -= item['price']
 
-                            skip_check = False 
-                            res = {}
+                        skip_check = False 
+                        res = {}
                         
                         max_retries = 2
                         for attempt in range(max_retries):
